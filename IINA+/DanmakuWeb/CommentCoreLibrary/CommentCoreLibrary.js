@@ -696,7 +696,7 @@ var CoreComment = (function () {
         },
         set: function (s) {
             this._size = s;
-            this.dom.style.fontSize = this._size + 'px';
+            this.dom.style.fontSize = '36px';//this._size + 'px';
         },
         enumerable: true,
         configurable: true
