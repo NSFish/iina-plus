@@ -1352,7 +1352,7 @@ var CommentFilter = (function () {
                 return extracted > rule.value;
             case '~':
             case 'regexp':
-                return (new RegExp(rule.value)).test(extracted.toString());
+                return new RegExp(rule.value, "i").test(extracted.toString());
             case '=':
             case 'eq':
                 return rule.value ===

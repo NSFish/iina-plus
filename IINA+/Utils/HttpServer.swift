@@ -54,14 +54,17 @@ class HttpServer: NSObject, DanmakuDelegate {
     
     func register(_ id: String,
                   site: SupportSites,
-                  url: String) {
+                  url: String) throws {
         let d = Danmaku(site, url: url)
         d.id = id
         d.delegate = self
-        if site == .bilibili {
+        if site != .bilibili {
             do {
                 try d.prepareBlockList()
-            } catch let error {
+            } catch let error as Danmaku.PrepareBlockListError where error == .customBlockListFileNotFound {
+                throw error
+            }
+            catch let error {
                 Log("Prepare DM block list error: \(error)")
             }
         }
@@ -79,6 +82,9 @@ class HttpServer: NSObject, DanmakuDelegate {
         }))
         danmukuObservers.append(Preferences.shared.observe(\.dmOpacity, options: .new, changeHandler: { _, _ in
             self.customDMOpdacity()
+        }))
+        danmukuObservers.append(Preferences.shared.observe(\.danmukuBlockListChanged, options: .new, changeHandler: { _,_ in
+            self.prepareWebSiteFiles()
         }))
         
         do {
@@ -141,7 +147,7 @@ class HttpServer: NSObject, DanmakuDelegate {
                 self?.customDMSpeed(text)
                 self?.customDMOpdacity(text)
                 if let site = self?.registeredItems[i].site,
-                    site == .bilibili {
+                    site != .bilibili {
                     self?.loadFilters(text)
                 }
                 

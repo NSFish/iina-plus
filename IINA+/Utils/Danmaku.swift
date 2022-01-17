@@ -56,8 +56,9 @@ class Danmaku: NSObject {
 
     let cc163Server = URL(string: "wss://weblink.cc.163.com")
     
-    
-    
+    enum PrepareBlockListError: Error {
+        case customBlockListFileNotFound
+    }
     
     init(_ site: SupportSites, url: String) {
         liveSite = site
@@ -96,7 +97,20 @@ class Danmaku: NSObject {
             let basicList = resourcePath + "/Block-List-Plus.xml"
             try FileManager.default.copyItem(atPath: basicList, toPath: targetPath)
         case .custom:
-            FileManager.default.createFile(atPath: targetPath, contents: Preferences.shared.dmBlockList.customBlockListData, attributes: nil)
+            guard let url = Preferences.shared.dmBlockList.customBlockListFileURL,
+                FileManager.default.fileExists(atPath: url.path) else {
+                throw PrepareBlockListError.customBlockListFileNotFound
+            }
+            
+            try FileManager.default.copyItem(at: url, to: URL.init(fileURLWithPath: targetPath))
+            
+            // 触发 KVO, 让 HttpServer 再一次复制 websiteFiles 到 Application Support 中
+            // 弹幕屏蔽文件也就相应生效了
+            let now = Date()
+            let formatter = DateFormatter()
+            formatter.dateStyle = .full
+            formatter.timeStyle = .full
+            Preferences.shared.danmukuBlockListChanged = formatter.string(from: now)
         }
     }
 

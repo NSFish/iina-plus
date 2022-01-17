@@ -74,7 +74,7 @@ class AdvancedViewController: NSViewController, NSMenuDelegate {
         let blockList = Preferences.shared.dmBlockList
     
         // Add the custom block list item
-        if blockList.customBlockListData != nil {
+        if blockList.customBlockListFileURL != nil {
             let title = blockList.customBlockListName
             if blockListPopUpButton.itemArray.count == 6 {
                 let item = blockListPopUpButton.itemArray[3]
@@ -94,14 +94,15 @@ class AdvancedViewController: NSViewController, NSMenuDelegate {
             choosePanel.beginSheetModal(for: window) {
                 guard $0 == .OK,
                     let url = self.choosePanel.url,
-                    let content = FileManager.default.contents(atPath: url.path) else {
+                    let _ = FileManager.default.contents(atPath: url.path) else {
                         self.initBlockListMenu()
                         return
                 }
+                
                 var fileName = url.lastPathComponent
                 fileName.deletePathExtension()
                 Preferences.shared.dmBlockList.customBlockListName = fileName
-                Preferences.shared.dmBlockList.customBlockListData = content
+                Preferences.shared.dmBlockList.customBlockListFileURL = url
                 Preferences.shared.dmBlockList.type = .custom
                 self.initBlockListMenu()
             }
@@ -118,8 +119,8 @@ struct BlockList {
         case none, basic, plus, custom
     }
     var type: BlockListType = .none
-    var customBlockListData: Data?
     var customBlockListName = ""
+    var customBlockListFileURL: URL?
     
     init() {
     }
@@ -127,8 +128,8 @@ struct BlockList {
     init?(data: Data) {
         if let coding = NSKeyedUnarchiver.unarchiveObject(with: data) as? Encoding {
             type = coding.type
-            customBlockListData = coding.customBlockListData
             customBlockListName = coding.customBlockListName
+            customBlockListFileURL = coding.customBlockListFileURL
         } else {
             return nil
         }
@@ -143,25 +144,25 @@ struct BlockList {
     private class Encoding: NSObject, NSCoding {
         
         var type: BlockListType = .none
-        var customBlockListData: Data?
         var customBlockListName = ""
+        var customBlockListFileURL: URL?
         
         init(_ blockList: BlockList) {
             type = blockList.type
-            customBlockListData = blockList.customBlockListData
             customBlockListName = blockList.customBlockListName
+            customBlockListFileURL = blockList.customBlockListFileURL
         }
         
         required init?(coder aDecoder: NSCoder) {
             self.type = BlockListType(rawValue: aDecoder.decodeInteger(forKey: "type")) ?? .none
-            self.customBlockListData = aDecoder.decodeObject(forKey: "customBlockListData") as? Data
             self.customBlockListName = aDecoder.decodeObject(forKey: "customBlockListName") as? String ?? ""
+            self.customBlockListFileURL = aDecoder.decodeObject(forKey: "customBlockListFileURL") as? URL
         }
         
         func encode(with aCoder: NSCoder) {
             aCoder.encode(self.type.rawValue, forKey: "type")
-            aCoder.encode(self.customBlockListData, forKey: "customBlockListData")
             aCoder.encode(self.customBlockListName, forKey: "customBlockListName")
+            aCoder.encode(self.customBlockListFileURL, forKey: "customBlockListFileURL")
         }
     }
 }

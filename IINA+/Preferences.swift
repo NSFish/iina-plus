@@ -67,6 +67,16 @@ class Preferences: NSObject {
         }
     }
     
+    @objc dynamic var danmukuBlockListChanged: String {
+        get {
+            return defaults(.danmukuBlockListChanged) as? String ?? "YES"
+        }
+        set {
+            defaultsSet(newValue, forKey: .danmukuBlockListChanged)
+            didChangeValue(for: \.danmukuBlockListChanged)
+        }
+    }
+    
     @objc var danmukuFontFamilyName: String {
         get {
             return defaults(.danmukuFontFamilyName) as? String ?? "SimHei"
@@ -150,6 +160,7 @@ enum PreferenceKeys: String {
     case livePlayer
     case liveDecoder
     case enableDanmaku
+    case danmukuBlockListChanged
     case danmukuFontFamilyName
     case danmukuFontWeight
     case danmukuFontSize

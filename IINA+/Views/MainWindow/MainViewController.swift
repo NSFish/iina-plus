@@ -188,18 +188,34 @@ class MainViewController: NSViewController {
                 yougetJSON: yougetJSON,
                 id: uuid)
         }.done {
+            
+            var errorOccured = false
             // init Danmaku
             if preferences.enableDanmaku,
                preferences.livePlayer == .iina,
                isDM {
                 switch site {
                 case .bilibili, .bangumi, .biliLive, .douyu, .huya:
-                    self.httpServer.register(uuid, site: site, url: self.searchField.stringValue)
+                    do {
+                        try self.httpServer.register(uuid, site: site, url: self.searchField.stringValue)
+                    } catch Danmaku.PrepareBlockListError.customBlockListFileNotFound {
+                        errorOccured = true
+                        
+                        let alert = NSAlert()
+                        alert.messageText = "注意"
+                        alert.informativeText = "找不到自定义弹幕屏蔽列表文件，请重新设置"
+                        alert.alertStyle = .warning
+                        alert.addButton(withTitle: "知道了")
+                        alert.beginSheetModal(for: self.view.window!, completionHandler: nil)
+                    }
                 default:
                     break
                 }
             }
             
+            guard !errorOccured else {
+                return
+            }
             processes.openWithPlayer(yougetJSON, key)
         }.catch {
             Log("Prepare DM file error : \($0)")
@@ -244,7 +260,7 @@ class MainViewController: NSViewController {
             guard let dic = $0.userInfo as? [String: String],
                 let id = dic["id"] else { return }
             
-            self.httpServer.register(id, site: .bilibili, url: "https://swift.org/\(id)")
+            try! self.httpServer.register(id, site: .bilibili, url: "https://swift.org/\(id)")
         }
         
         // esc key down event

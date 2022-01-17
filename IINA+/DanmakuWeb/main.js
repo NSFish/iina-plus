@@ -179,7 +179,10 @@ function start(websocketServerLocation){
                     'color': 0xffffff,
                     'border': false
                 };
-                window.cm.send(comment);
+                
+                if (window.cm.validate(comment)) {
+                    window.cm.send(comment);
+                }
             }
             break
         case 'liveDMServer':
