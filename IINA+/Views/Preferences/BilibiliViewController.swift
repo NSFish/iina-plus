@@ -27,10 +27,14 @@ class BilibiliViewController: NSViewController {
     
     @IBOutlet weak var progressIndicator: NSProgressIndicator!
     
+    enum BiliCodec: Int {
+        case av1, hevc, avc
+    }
+    
     enum BiliBiliTabs: Int {
         case info, login, error, progress
     }
-    let bilibili = Bilibili()
+    let bilibili = Processes.shared.videoDecoder.bilibili
     
     override func viewDidLoad() {
         super.viewDidLoad()

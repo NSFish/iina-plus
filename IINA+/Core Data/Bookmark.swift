@@ -10,6 +10,7 @@
 import Cocoa
 import Foundation
 import CoreData
+import SDWebImage
 
 //@objc(Bookmark)
 public class Bookmark: NSManagedObject {
@@ -18,9 +19,13 @@ public class Bookmark: NSManagedObject {
         SupportSites(url: url)
     }()
     
-    func updateState() {
+    @objc dynamic var image: NSImage?
+    
+    private var inited = false
+    
+    func updateState(_ force: Bool = false) {
         if site == .unsupported {
-            self.state = -1
+            self.state = LiveState.none.raw
             self.save()
             return
         }
@@ -28,17 +33,24 @@ public class Bookmark: NSManagedObject {
         let limitSec: CGFloat = [.bangumi, .bilibili, .unsupported].contains(site) ? 300 : 20
         
         if let d = updateDate?.timeIntervalSince1970,
-           (Date().timeIntervalSince1970 - d) < limitSec {
+           (Date().timeIntervalSince1970 - d) < limitSec, inited {
             return
         }
         
-        Processes.shared.videoGet.liveInfo(url).done(on: .main) {
+        inited = true
+        
+        if let d = updateDate?.timeIntervalSince1970,
+           (Date().timeIntervalSince1970 - d) > 1800 {
+            state = LiveState.none.raw
+        }
+        
+        Processes.shared.videoDecoder.liveInfo(url).done(on: .main) {
             self.setInfo($0)
             }.catch(on: .main) {
                 let s = "Get live status error: \($0) \n - \(self.url)"
                 Log(s)
                 self.liveTitle = self.url
-                self.state = -1
+                self.state = LiveState.none.raw
                 self.save()
         }
     }
@@ -50,23 +62,36 @@ public class Bookmark: NSManagedObject {
         let isLiveSite = site != .bangumi && site != .bilibili
         
         cover = isLiveSite ? info.avatar : info.cover
-        cover?.coverUrlFormatter(site: site)
+        cover?.coverUrlFormatter(site: isLiveSite ? site : .biliLive)
+
+        updateImage()
         
         if info.site == .bangumi {
             liveName = "Bangumi"
         }
         
         if isLiveSite {
-            state = info.isLiving ? 1 : 0
+            state = (info.isLiving ? LiveState.living : LiveState.offline).raw
         } else if info.site == .bangumi || info.site == .bilibili {
-            state = -99
+            state = LiveState.offline.raw
         } else {
-            state = -1
+            state = LiveState.none.raw
         }
         
         updateDate = Date()
         
         save()
+    }
+    
+    private func updateImage() {
+        image = nil
+        if let c = cover {
+            SDWebImageManager.shared.loadImage(
+                with: .init(string: c),
+                progress: nil) { image, _, _, _, _, url in
+                    self.image = image
+            }
+        }
     }
     
     func save() {

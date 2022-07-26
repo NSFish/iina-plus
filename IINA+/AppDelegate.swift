@@ -39,7 +39,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Log("App Version \(version) (Build \(build))")
         Log("macOS " + ProcessInfo().operatingSystemVersionString)
 
+        persistentContainer.persistentStoreDescriptions.forEach {
+            Log("CoreData Path: \($0.url?.path ?? "none")")
+        }
+        
         initImageCache()
+        
+        Processes.shared.httpServer.start()
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {

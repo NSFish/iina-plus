@@ -23,11 +23,13 @@ class AdvancedViewController: NSViewController, NSMenuDelegate {
         initCacheSize()
     }
     
-    var blockTypeButtons: [NSButton] = []
+    var blockTypeButtons: [NSButton: String] = [:]
     @IBAction func chooseBlockType(_ sender: NSButton) {
         Preferences.shared.dmBlockType = blockTypeButtons.filter {
-            $0.state == .on
-        }.map { $0.title }
+            $0.key.state == .on
+        }.map {
+            $0.value
+        }
     }
     
     lazy var choosePanel: NSOpenPanel = {
@@ -41,21 +43,52 @@ class AdvancedViewController: NSViewController, NSMenuDelegate {
     
     @IBOutlet weak var blockListPopUpButton: NSPopUpButton!
     
+    // MARK: - Live State Color
+    @IBOutlet var livingColorPick: ColorPickButton!
+    @IBOutlet var offlineColorPick: ColorPickButton!
+    @IBOutlet var replayColorPick: ColorPickButton!
+    @IBOutlet var unknownColorPick: ColorPickButton!
+    
+    
+    var colorPanelCloseNotification: NSObjectProtocol?
+    var currentPicker: ColorPickButton?
+    
+    @IBAction func pickColor(_ sender: ColorPickButton) {
+        currentPicker = sender
+        
+        let colorPanel = NSColorPanel.shared
+        colorPanel.color = sender.color
+        colorPanel.setTarget(self)
+        colorPanel.setAction(#selector(colorDidChange))
+        colorPanel.makeKeyAndOrderFront(self)
+        colorPanel.isContinuous = true
+    }
+    
+    let pref = Preferences.shared
+    
     override func viewDidLoad() {
         super.viewDidLoad()
-        
-        blockTypeButtons.append(scrollButton)
-        blockTypeButtons.append(topButton)
-        blockTypeButtons.append(bottomButton)
-        blockTypeButtons.append(colorButton)
-        blockTypeButtons.append(advancedButton)
+        blockTypeButtons[scrollButton] = "Scroll"
+        blockTypeButtons[topButton] = "Top"
+        blockTypeButtons[bottomButton] = "Bottom"
+        blockTypeButtons[colorButton] = "Color"
+        blockTypeButtons[advancedButton] = "Advanced"
         blockTypeButtons.filter {
-            Preferences.shared.dmBlockType.contains($0.title)
-            }.forEach {
-                $0.state = .on
+            Preferences.shared.dmBlockType.contains($0.value)
+        }.forEach {
+            $0.key.state = .on
         }
         
         initBlockListMenu()
+        
+        colorPanelCloseNotification = NotificationCenter.default.addObserver(forName: NSColorPanel.willCloseNotification, object: nil, queue: .main) { _ in
+            self.currentPicker = nil
+        }
+        
+        livingColorPick.color = pref.stateLiving
+        offlineColorPick.color = pref.stateOffline
+        replayColorPick.color = pref.stateReplay
+        unknownColorPick.color = pref.stateUnknown
     }
     
     override func viewWillAppear() {
@@ -72,7 +105,7 @@ class AdvancedViewController: NSViewController, NSMenuDelegate {
     
     func initBlockListMenu() {
         let blockList = Preferences.shared.dmBlockList
-    
+        
         // Add the custom block list item
         if blockList.customBlockListFileURL != nil {
             let title = blockList.customBlockListName
@@ -93,10 +126,10 @@ class AdvancedViewController: NSViewController, NSMenuDelegate {
             guard let window = self.view.window else { return }
             choosePanel.beginSheetModal(for: window) {
                 guard $0 == .OK,
-                    let url = self.choosePanel.url,
-                    let _ = FileManager.default.contents(atPath: url.path) else {
-                        self.initBlockListMenu()
-                        return
+                      let url = self.choosePanel.url,
+                      let _ = FileManager.default.contents(atPath: url.path) else {
+                    self.initBlockListMenu()
+                    return
                 }
                 
                 var fileName = url.lastPathComponent
@@ -104,11 +137,38 @@ class AdvancedViewController: NSViewController, NSMenuDelegate {
                 Preferences.shared.dmBlockList.customBlockListName = fileName
                 Preferences.shared.dmBlockList.customBlockListFileURL = url
                 Preferences.shared.dmBlockList.type = .custom
+                
                 self.initBlockListMenu()
             }
         } else {
             let index = blockListPopUpButton.indexOfSelectedItem
             Preferences.shared.dmBlockList.type = BlockList.BlockListType(rawValue: index) ?? .none
+        }
+    }
+    
+    @objc func colorDidChange(sender: NSColorPanel) {
+        let colorPanel = sender
+        guard let picker = currentPicker else { return }
+        
+        picker.color = colorPanel.color
+        
+        switch picker {
+        case livingColorPick:
+            pref.stateLiving = colorPanel.color
+        case offlineColorPick:
+            pref.stateOffline = colorPanel.color
+        case replayColorPick:
+            pref.stateReplay = colorPanel.color
+        case unknownColorPick:
+            pref.stateUnknown = colorPanel.color
+        default:
+            break
+        }
+    }
+    
+    deinit {
+        if let n = colorPanelCloseNotification {
+            NotificationCenter.default.removeObserver(n)
         }
     }
 }

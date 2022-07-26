@@ -35,6 +35,14 @@ function sendRegisterGroups(arr) {
     return os.getBuffer();
 };
 
+function sendHeartBeat() {
+    var req = new HUYA.WebSocketCommand;
+    req.iCmdType = HUYA.EWebSocketCommandType.EWSCmdC2S_HeartBeatReq;
+    var os = new Taf.JceOutputStream;
+    req.writeTo(os);
+    return os.getBuffer();
+};
+
 function test(t) {
     var arrayBuffer = new Uint8Array(t).buffer;
     var i = new Taf.JceInputStream(arrayBuffer);
@@ -52,21 +60,15 @@ function test(t) {
         case HUYA.EWebSocketCommandType.EWSCmdS2C_MsgPushReq:
             i = new Taf.JceInputStream(n.vData.buffer),
             (U = new HUYA.WSPushMessage).readFrom(i);
-            var R = U.iUri,
-                b = U.lMsgId;
-            
-            
-            if (R !== 1400)
-                return;
-            
-            i = new Taf.JceInputStream(U.sMsg.buffer);
 
             
+            i = new Taf.JceInputStream(U.sMsg.buffer);
             var messageNotice = new DM.MessageNotice();
-            
             messageNotice.readFrom(i);
             
-            return messageNotice.sContent;
+            U.sMsg = messageNotice.sContent
+            
+            return JSON.stringify(U);
         case HUYA.EWebSocketCommandType.EWSCmdS2C_HeartBeatAck:
             return 'EWebSocketCommandType.EWSCmdS2C_HeartBeatAck';
         case HUYA.EWebSocketCommandType.EWSCmdS2C_VerifyCookieRsp:
@@ -104,6 +106,8 @@ function test(t) {
             return 'EWebSocketCommandType.EWSCmdS2C_EnterP2PAck';
         case HUYA.EWebSocketCommandType.EWSCmdS2C_ExitP2PAck:
             return 'EWebSocketCommandType.EWSCmdS2C_ExitP2PAck';
+        case HUYA.EWebSocketCommandType.EWSCmdS2C_HeartBeatRsp:
+            return 'EWebSocketCommandType.EWSCmdS2C_HeartBeatRsp';
         default:
             return 'EWebSocketCommandType.Default';
     };

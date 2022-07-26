@@ -8,6 +8,7 @@
 
 import Cocoa
 import Swifter
+import WebKit
 
 enum DanamkuMethod: String {
     case start,
@@ -27,189 +28,216 @@ enum DanamkuMethod: String {
 class HttpServer: NSObject, DanmakuDelegate {
     private var server = Swifter.HttpServer()
     
-    struct RegisteredItem {
-        enum ContentState: Int {
-            case unknown, contented, discontented
-        }
-        
-        
-        var id: String
-        var site: SupportSites
-        var url: String
-        var session: WebSocketSession? = nil
-        var danmaku: Danmaku
-        
-        var state: ContentState = .unknown
-    }
-    
-    
     private var unknownSessions = [WebSocketSession]()
-    private var registeredItems = [RegisteredItem]()
+    var connectedItems = [DanmakuWS]()
+    
+    private var danmakus = [Danmaku]()
     private var danmukuObservers: [NSObjectProtocol] = []
-    private let sid = "rua-uuid~~~"
     
     private var httpFilesURL: URL?
     
-    let videoGet = VideoGet()
-    
-    func register(_ id: String,
-                  site: SupportSites,
-                  url: String) throws {
-        let d = Danmaku(site, url: url)
-        d.id = id
-        d.delegate = self
-        if site != .bilibili {
-            do {
-                try d.prepareBlockList()
-            } catch let error as Danmaku.PrepareBlockListError where error == .customBlockListFileNotFound {
-                throw error
-            }
-            catch let error {
-                Log("Prepare DM block list error: \(error)")
-            }
-        }
-        registeredItems.append(.init(id: id, site: site, url: url, danmaku: d))
-    }
+    let videoDecoder = VideoDecoder()
     
     func start() {
         prepareWebSiteFiles()
+        guard let dir = httpFilesURL?.path else { return }
         
-        danmukuObservers.append(Preferences.shared.observe(\.danmukuFontFamilyName, options: .new, changeHandler: { _, _ in
-            self.loadCustomFont()
-        }))
-        danmukuObservers.append(Preferences.shared.observe(\.dmSpeed, options: .new, changeHandler: { _, _ in
-            self.customDMSpeed()
-        }))
-        danmukuObservers.append(Preferences.shared.observe(\.dmOpacity, options: .new, changeHandler: { _, _ in
-            self.customDMOpdacity()
-        }))
-        danmukuObservers.append(Preferences.shared.observe(\.danmukuBlockListChanged, options: .new, changeHandler: { _,_ in
-            self.prepareWebSiteFiles()
-        }))
+        // Video API
+        server.POST["/video/danmakuurl"] = { request -> HttpResponse in
+            guard let url = request.parameters["url"],
+                  let json = self.decode(url),
+                  let key = json.videos.first?.key,
+                  let data = json.danmakuUrl(key)?.data(using: .utf8) else {
+                return .badRequest(nil)
+            }
+            return HttpResponse.ok(.data(data))
+        }
+        
+        server.POST["/video/iinaurl"] = { request -> HttpResponse in
+            
+            var type = IINAUrlType.normal
+            if let tStr = request.parameters["type"],
+               let t = IINAUrlType(rawValue: tStr) {
+                type = t
+            }
+            
+            guard let url = request.parameters["url"],
+                  let json = self.decode(url),
+                  let key = json.videos.first?.key,
+                  let data = json.iinaUrl(key, type: type)?.data(using: .utf8) else {
+                return .badRequest(nil)
+            }
+            return HttpResponse.ok(.data(data))
+        }
+        
+        server.get["/video"] = { request -> HttpResponse in
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            var pars = [String: String]()
+            request.queryParams.forEach {
+                pars[$0.0] = $0.1.removingPercentEncoding
+            }
+            let key = pars["key"] ?? ""
+            
+            guard let url = pars["url"],
+                  let json = self.decode(url, key: key),
+                  let data = pars["pluginAPI"] == nil ? try? encoder.encode(json) : json.iinaPlusArgsString(key)?.data(using: .utf8)
+            else {
+                return .badRequest(nil)
+            }
+            
+            return HttpResponse.ok(.data(data))
+        }
+        
+        // Danmaku API
+        server["/danmaku/:path"] = directoryBrowser(dir)
+        
+        server["/danmaku-websocket"] = websocket(text:{ [weak self] session, text in
+            
+            var clickType: IINAUrlType = .none
+            
+            let ws: DanmakuWS? = {
+                if text.starts(with: "iinaDM://") {
+                    clickType = .plugin
+                    let u = String(text.dropFirst("iinaDM://".count))
+                    
+                    return .init(id: u,
+                                 site: .init(url: u),
+                                 url: u,
+                                 session: session)
+                } else if text.starts(with: "iinaWebDM://") {
+                    let hex = String(text.dropFirst("iinaWebDM://".count))
+                    clickType = .danmaku
+                    guard let ids = String(data: Data(hex: hex), encoding: .utf8)?.split(separator: "👻").map(String.init),
+                            ids.count == 2 else { return nil }
+                    let u = ids[1]
+                    
+                    return .init(id: ids[0],
+                                 site: .init(url: u),
+                                 url: u,
+                                 session: session)
+                } else {
+                    return nil
+                }
+            }()
+            
+            
+            guard let sessions = self?.unknownSessions,
+                  sessions.contains(session),
+                  let ws = ws else {
+                return
+            }
+            
+            DispatchQueue.main.async {
+                switch clickType {
+                case .danmaku:
+                    ws.loadCustomFont()
+                    ws.customDMSpeed()
+                    ws.customDMOpdacity()
+                    
+                    if [.bilibili, .bangumi, .b23].contains(ws.site) {
+                        ws.loadFilters()
+                        ws.loadXMLDM()
+                        session.socket.close()
+                    } else if ws.site != .unsupported {
+                        self?.loadNewDanmaku(ws)
+                        //
+                        ws.loadFilters()
+                        self?.connectedItems.append(ws)
+                    }
+                case .plugin:
+                    guard ![.unsupported, .bangumi, .bilibili, .b23].contains(
+                        ws.site) else { return }
+                    self?.loadNewDanmaku(ws)
+                    self?.connectedItems.append(ws)
+                default:
+                    break
+                }
+            }
+        }, connected: { [weak self] session in
+            Log("Websocket client connected.")
+            self?.unknownSessions.append(session)
+        }, disconnected: { [weak self] session in
+            Log("Websocket client disconnected.")
+            self?.connectedItems.removeAll { $0.session == session
+            }
+            guard let items = self?.connectedItems else { return }
+            self?.danmakus.removeAll { dm in
+                let remove = !items.contains(where: { $0.url == dm.url })
+                if remove {
+                    dm.stop()
+                }
+                return remove
+            }
+            
+            Log("Danmaku list: \(self?.danmakus.map({ $0.url }) ?? [])")
+        })
+        
+        /*
+         server.POST["/danmaku/open"] = { request -> HttpResponse in
+         
+         guard let url = request.parameters["url"],
+         let uuid = request.parameters["id"] else {
+         return .badRequest(nil)
+         }
+         
+         let site = SupportSites(url: url)
+         
+         switch site {
+         case .bilibili, .bangumi:
+         // Return DM File
+         return .badRequest(nil)
+         case .douyu, .huya, .biliLive:
+         self.register(uuid, site: site, url: url)
+         default:
+         return .badRequest(nil)
+         }
+         
+         return HttpResponse.ok(.data(data))
+         }
+         
+         server.POST["/danmaku/close"] = { request -> HttpResponse in
+         guard let uuid = request.parameters["uuid"] else {
+         return .badRequest(nil)
+         }
+         
+         resign
+         
+         
+         return HttpResponse.ok(.data(data))
+         }
+         */
+        
+        server.listenAddressIPv4 = "127.0.0.1"
+        
+        let port = Preferences.shared.dmPort
+        
         
         do {
-            guard let dir = httpFilesURL?.path else { return }
-            
-            // Video API
-            server.POST["/video/danmakuurl"] = { request -> HttpResponse in
-                
-                
-                
-                guard let url = request.parameters["url"],
-                      let json = self.decode(url),
-                      let key = json.videos.first?.key,
-                      let data = json.danmakuUrl(key)?.data(using: .utf8) else {
-                    return .badRequest(nil)
-                }
-                return HttpResponse.ok(.data(data))
-            }
-            
-            server.POST["/video/iinaurl"] = { request -> HttpResponse in
-                guard let url = request.parameters["url"],
-                      let json = self.decode(url),
-                      let key = json.videos.first?.key,
-                      let data = json.iinaUrl(key)?.data(using: .utf8) else {
-                    return .badRequest(nil)
-                }
-                return HttpResponse.ok(.data(data))
-            }
-            
-            server.POST["/video"] = { request -> HttpResponse in
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = .prettyPrinted
-                
-                guard let url = request.parameters["url"],
-                      let json = self.decode(url),
-                      let data = try? encoder.encode(json) else {
-                    return .badRequest(nil)
-                }
-                
-                return HttpResponse.ok(.data(data))
-            }
-            
-            // Danmaku API
-            server["/danmaku/:path"] = directoryBrowser(dir)
-            
-            server["/danmaku-websocket"] = websocket(text:{ [weak self] session, text in
-                
-                guard let sessions = self?.unknownSessions,
-                    sessions.contains(session),
-                    let i = self?.registeredItems.firstIndex(where: { $0.id == text }) else { return }
-                self?.unknownSessions.removeAll {
-                    $0 == session
-                }
-                
-                self?.registeredItems[i].state = .contented
-                self?.registeredItems[i].session = session
-                Log(self?.registeredItems.map({ $0.url }))
-                
-                self?.loadCustomFont(text)
-                self?.customDMSpeed(text)
-                self?.customDMOpdacity(text)
-                if let site = self?.registeredItems[i].site,
-                    site != .bilibili {
-                    self?.loadFilters(text)
-                }
-                
-                self?.registeredItems[i].danmaku.loadDM()
-            }, connected: { [weak self] session in
-                Log("Websocket client connected.")
-                self?.unknownSessions.append(session)
-            }, disconnected: { [weak self] session in
-                Log("Websocket client disconnected.")
-                self?.registeredItems.first {
-                    $0.session == session
-                    }?.danmaku.stop()
-                
-                self?.registeredItems.removeAll { $0.session == session
-                }
-                Log(self?.registeredItems.map({ $0.url }))
-            })
-            
-            /*
-            server.POST["/danmaku/open"] = { request -> HttpResponse in
-                
-                guard let url = request.parameters["url"],
-                      let uuid = request.parameters["id"] else {
-                    return .badRequest(nil)
-                }
-                
-                let site = SupportSites(url: url)
-                
-                switch site {
-                case .bilibili, .bangumi:
-                    // Return DM File
-                    return .badRequest(nil)
-                case .eGame, .douyu, .huya, .biliLive:
-                    self.register(uuid, site: site, url: url)
-                default:
-                    return .badRequest(nil)
-                }
-                
-                return HttpResponse.ok(.data(data))
-            }
-            
-            server.POST["/danmaku/close"] = { request -> HttpResponse in
-                guard let uuid = request.parameters["uuid"] else {
-                    return .badRequest(nil)
-                }
-                
-                resign
-                
-                
-                return HttpResponse.ok(.data(data))
-            }
-            */
-             
-            server.listenAddressIPv4 = "127.0.0.1"
-            
-            let port = Preferences.shared.dmPort
-            
             try server.start(.init(port), forceIPv4: true)
             Log("Server has started ( port = \(try server.port()) ). Try to connect now...")
         } catch let error {
             Log("Server start error: \(error)")
         }
+        
+        danmukuObservers.append(Preferences.shared.observe(\.danmukuFontFamilyName, options: .new, changeHandler: { _, _ in
+            self.connectedItems.forEach {
+                $0.loadCustomFont()
+            }
+        }))
+        danmukuObservers.append(Preferences.shared.observe(\.dmSpeed, options: .new, changeHandler: { _, _ in
+            self.connectedItems.forEach {
+                $0.customDMSpeed()
+            }
+        }))
+        danmukuObservers.append(Preferences.shared.observe(\.dmOpacity, options: .new, changeHandler: { _, _ in
+            self.connectedItems.forEach {
+                $0.customDMOpdacity()
+            }
+        }))
+        danmukuObservers.append(Preferences.shared.observe(\.danmukuBlockListChanged, options: .new, changeHandler: { _,_ in
+            self.prepareWebSiteFiles()
+        }))
     }
 
     func stop() {
@@ -219,11 +247,24 @@ class HttpServer: NSObject, DanmakuDelegate {
         }
     }
     
+    func loadNewDanmaku(_ ws: DanmakuWS) {
+        guard !danmakus.contains(where: { $0.url == ws.url }) else { return }
+        let d = Danmaku(ws.url)
+        d.id = ws.url
+        d.delegate = self
+        // 将屏蔽文件复制到 Content/Resources/WebFiles 中
+        try! d.prepareBlockList()
+        danmakus.append(d)
+        d.loadDM()
+        
+        Log(danmakus.map({ $0.url }))
+    }
+    
     private func prepareWebSiteFiles() {
         do {
             guard var resourceURL = Bundle.main.resourceURL,
                 let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
-            let folderName = "danmaku"
+            let folderName = "WebFiles"
             resourceURL.appendPathComponent(folderName)
             
             var filesURL = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -237,83 +278,35 @@ class HttpServer: NSObject, DanmakuDelegate {
             }
             
             try FileManager.default.copyItem(at: resourceURL, to: filesURL)
+            Log(resourceURL.path)
+            Log(filesURL.path)
+            
         } catch let error {
             Log(error)
         }
     }
     
-    struct DanmakuEvent: Encodable {
-        var method: String
-        var text: String
-    }
-    
-    private func loadCustomFont(_ id: String = "rua-uuid~~~") {
-        let pref = Preferences.shared
-        let font = pref.danmukuFontFamilyName
-        let size = pref.danmukuFontSize
-        let weight = pref.danmukuFontWeight
-        
-        var text = ".customFont {"
-        text += "color: #fff;"
-        text += "font-family: '\(font) \(weight)', SimHei, SimSun, Heiti, 'MS Mincho', 'Meiryo', 'Microsoft YaHei', monospace;"
-        text += "font-size: \(size)px;"
-        
-        
-        text += "letter-spacing: 0;line-height: 100%;margin: 0;padding: 3px 0 0 0;position: absolute;text-decoration: none;text-shadow: -1px 0 black, 0 1px black, 1px 0 black, 0 -1px black;-webkit-text-size-adjust: none;-ms-text-size-adjust: none;text-size-adjust: none;-webkit-transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);-webkit-transform-origin: 0% 0%;-ms-transform-origin: 0% 0%;transform-origin: 0% 0%;white-space: pre;word-break: keep-all;}"
-        
-        Log("Danmaku font \(font) \(weight), \(size)px.")
-        
-        send(.customFont, text: text, id: id)
-    }
-
-    private func customDMSpeed(_ id: String = "rua-uuid~~~") {
-        let dmSpeed = Int(Preferences.shared.dmSpeed)
-        send(.dmSpeed, text: "\(dmSpeed)", id: id)
-    }
-
-    private func customDMOpdacity(_ id: String = "rua-uuid~~~") {
-        send(.dmOpacity, text: "\(Preferences.shared.dmOpacity)", id: id)
-    }
-    
-    private func loadFilters(_ id: String = "rua-uuid~~~") {
-        var types = Preferences.shared.dmBlockType
-        if Preferences.shared.dmBlockList.type != .none {
-            types.append("List")
-        }
-        send(.dmBlockList, text: types.joined(separator: ", "), id: id)
-    }
-
-    
-    func send(_ method: DanamkuMethod, text: String = "", id: String) {
-        guard let data = try? JSONEncoder().encode(DanmakuEvent(method: method.rawValue, text: text)),
-            let str = String(data: data, encoding: .utf8) else { return }
-        
-        if id == sid {
-            self.registeredItems.forEach {
-                $0.session?.writeText(str)
-            }
-        } else {
-            self.registeredItems.first {
-                $0.id == id
-                }?.session?.writeText(str)
-        }
-        
-        if !str.contains("sendDM") {
-            Log("WriteText to websocket: \(str)")
+    func send(_ method: DanamkuMethod, text: String = "", sender: Danmaku) {
+        self.connectedItems.filter {
+            $0.url == sender.url
+        }.forEach {
+            $0.send(method, text: text)
         }
     }
     
     
-    private func decode(_ url: String) -> YouGetJSON? {
+    private func decode(_ url: String, key: String = "") -> YouGetJSON? {
         var re: YouGetJSON?
         let queue = DispatchGroup()
         queue.enter()
-        videoGet.decodeUrl(url).done {
+        videoDecoder.decodeUrl(url).then{
+            self.videoDecoder.prepareVideoUrl($0, key)
+        }.done {
             re = $0
         }.ensure {
             queue.leave()
         }.catch {
-            print($0)
+            Log($0)
         }
         queue.wait()
         return re
@@ -333,5 +326,74 @@ extension HttpRequest {
             }
             return parameters
         }
+    }
+}
+
+struct DanmakuEvent: Encodable {
+    var method: String
+    var text: String
+}
+
+struct DanmakuWS {
+    var id: String
+    var site: SupportSites
+    var url: String
+    var session: WebSocketSession? = nil
+    
+    var webview: WKWebView? = nil
+    
+    func send(_ method: DanamkuMethod, text: String = "") {
+        guard let data = try? JSONEncoder().encode(DanmakuEvent(method: method.rawValue, text: text)),
+            let str = String(data: data, encoding: .utf8) else { return }
+        
+        if let s = session {
+            s.writeText(str)
+        } else if let wv = webview {
+            wv.evaluateJavaScript("window.dmMessage(\(str));").catch { _ in }
+        }
+        
+        if !str.contains("sendDM") {
+            Log("WriteText to \(id): \(str)")
+        }
+    }
+    
+    func loadCustomFont() {
+        let pref = Preferences.shared
+        let font = pref.danmukuFontFamilyName
+        let size = pref.danmukuFontSize
+        let weight = pref.danmukuFontWeight
+        
+        var text = ".customFont {"
+        text += "color: #fff;"
+        text += "font-family: '\(font) \(weight)', SimHei, SimSun, Heiti, 'MS Mincho', 'Meiryo', 'Microsoft YaHei', monospace;"
+        text += "font-size: \(size)px;"
+        
+        
+        text += "letter-spacing: 0;line-height: 100%;margin: 0;padding: 3px 0 0 0;position: absolute;text-decoration: none;text-shadow: -1px 0 black, 0 1px black, 1px 0 black, 0 -1px black;-webkit-text-size-adjust: none;-ms-text-size-adjust: none;text-size-adjust: none;-webkit-transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);-webkit-transform-origin: 0% 0%;-ms-transform-origin: 0% 0%;transform-origin: 0% 0%;white-space: pre;word-break: keep-all;}"
+        
+        Log("Danmaku font \(font) \(weight), \(size)px.")
+        
+        send(.customFont, text: text)
+    }
+
+    func customDMSpeed() {
+        let dmSpeed = Int(Preferences.shared.dmSpeed)
+        send(.dmSpeed, text: "\(dmSpeed)")
+    }
+
+    func customDMOpdacity() {
+        send(.dmOpacity, text: "\(Preferences.shared.dmOpacity)")
+    }
+    
+    func loadFilters() {
+        var types = Preferences.shared.dmBlockType
+        if Preferences.shared.dmBlockList.type != .none {
+            types.append("List")
+        }
+        send(.dmBlockList, text: types.joined(separator: ", "))
+    }
+    
+    func loadXMLDM() {
+        send(.loadDM, text: id)
     }
 }

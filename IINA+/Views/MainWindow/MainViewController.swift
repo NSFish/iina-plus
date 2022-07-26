@@ -11,6 +11,7 @@ import CoreData
 import PromiseKit
 import Alamofire
 import SDWebImage
+import WebKit
 
 private extension NSPasteboard.PasteboardType {
     static let bookmarkRow = NSPasteboard.PasteboardType("bookmark.Row")
@@ -35,12 +36,10 @@ class MainViewController: NSViewController {
     }
     @objc var context: NSManagedObjectContext
     @IBAction func sendURL(_ sender: Any) {
-        if bookmarkTableView.selectedRow != -1 {
-            let url = bookmarks[bookmarkTableView.selectedRow].url
-            searchField.stringValue = url
-            searchField.becomeFirstResponder()
-            startSearch(self)
-        }
+        guard bookmarkTableView.selectedRow != -1 else { return }
+        let url = bookmarks[bookmarkTableView.selectedRow].url
+        searchField.stringValue = url
+        startSearchingUrl(url)
     }
     
     // MARK: - Menu
@@ -81,6 +80,12 @@ class MainViewController: NSViewController {
         Log("Remove Filters")
     }
     
+    @IBAction func copyUrl(_ sender: NSMenuItem) {
+        let url = bookmarks[bookmarkTableView.clickedRow].url
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+    }
+    
     @IBAction func decode(_ sender: NSMenuItem) {
         let url = bookmarks[bookmarkTableView.clickedRow].url
         searchField.stringValue = url
@@ -99,7 +104,7 @@ class MainViewController: NSViewController {
     @IBOutlet weak var bilibiliTableView: NSTableView!
     @IBOutlet var bilibiliArrayController: NSArrayController!
     @objc dynamic var bilibiliCards: [BilibiliCard] = []
-    let bilibili = Bilibili()
+    let bilibili = Processes.shared.videoDecoder.bilibili
     @IBOutlet weak var videoInfosContainerView: NSView!
     
     @IBAction func sendBilibiliURL(_ sender: Any) {
@@ -110,10 +115,8 @@ class MainViewController: NSViewController {
                 searchField.stringValue = "https://www.bilibili.com/video/\(bvid)"
                 searchField.becomeFirstResponder()
                 startSearch(self)
-            } else if card.videos > 1,
-                      let u = URL(string: "https://www.bilibili.com/video/\(bvid)") {
-                
-                bilibili.getVideoList(u).done { infos in
+            } else if card.videos > 1 {
+                bilibili.getVideoList("https://www.bilibili.com/video/\(bvid)").done { infos in
                     self.showSelectVideo(bvid, infos: infos)
                     }.catch { error in
                         Log("Get video list error: \(error)")
@@ -156,7 +159,6 @@ class MainViewController: NSViewController {
     @IBAction func openSelectedSuggestion(_ sender: Any) {
         let row = suggestionsTableView.selectedRow
         let processes = Processes.shared
-        let preferences = Preferences.shared
         
         func clear() {
             isSearching = false
@@ -165,7 +167,7 @@ class MainViewController: NSViewController {
         }
         
         guard row != -1,
-            var yougetJSON = yougetResult else {
+            let yougetJSON = yougetResult else {
             if isSearching {
                 processes.stopDecodeURL()
             }
@@ -173,64 +175,19 @@ class MainViewController: NSViewController {
             return
         }
         clear()
-        let uuid = yougetJSON.uuid
-        
-        let videoGet = processes.videoGet
-        
-        let isDM = processes.isDanmakuVersion()
-        let key = yougetJSON.videos[row].key
-        let site = SupportSites(url: self.searchField.stringValue)
-        
-        videoGet.prepareVideoUrl(yougetJSON, row).get {
-            yougetJSON = $0
-        }.then { _ in
-            videoGet.prepareDanmakuFile(
-                yougetJSON: yougetJSON,
-                id: uuid)
-        }.done {
-            
-            var errorOccured = false
-            // init Danmaku
-            if preferences.enableDanmaku,
-               preferences.livePlayer == .iina,
-               isDM {
-                switch site {
-                case .bilibili, .bangumi, .biliLive, .douyu, .huya:
-                    do {
-                        try self.httpServer.register(uuid, site: site, url: self.searchField.stringValue)
-                    } catch Danmaku.PrepareBlockListError.customBlockListFileNotFound {
-                        errorOccured = true
-                        
-                        let alert = NSAlert()
-                        alert.messageText = "注意"
-                        alert.informativeText = "找不到自定义弹幕屏蔽列表文件，请重新设置"
-                        alert.alertStyle = .warning
-                        alert.addButton(withTitle: "知道了")
-                        alert.beginSheetModal(for: self.view.window!, completionHandler: nil)
-                    }
-                default:
-                    break
-                }
-            }
-            
-            guard !errorOccured else {
-                return
-            }
-            processes.openWithPlayer(yougetJSON, key)
-        }.catch {
+        open(result: yougetJSON, row: row).catch {
             Log("Prepare DM file error : \($0)")
         }
     }
     
     // MARK: - Danmaku
-    let httpServer = HttpServer()
     
     let iinaProxyAF = Alamofire.Session()
     
     // MARK: - Functions
     override func viewDidLoad() {
         super.viewDidLoad()
-        httpServer.start()
+        let proc = Processes.shared
         
         loadBilibiliCards()
         bookmarkArrayController.sortDescriptors = dataManager.sortDescriptors
@@ -255,13 +212,6 @@ class MainViewController: NSViewController {
             self.reloadTableView()
         }
         NotificationCenter.default.addObserver(self, selector: #selector(scrollViewDidScroll(_:)), name: NSScrollView.didLiveScrollNotification, object: bilibiliTableView.enclosingScrollView)
-        
-        NotificationCenter.default.addObserver(forName: .loadDanmaku, object: nil, queue: .main) {
-            guard let dic = $0.userInfo as? [String: String],
-                let id = dic["id"] else { return }
-            
-            try! self.httpServer.register(id, site: .bilibili, url: "https://swift.org/\(id)")
-        }
         
         // esc key down event
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -426,17 +376,36 @@ class MainViewController: NSViewController {
         }
     }
     
+    
+    func openWithJSPlayer(_ url: String) {
+        guard let playerWC = NSStoryboard(name: .player, bundle: nil).instantiateInitialController() as? JSPlayerWindowController else {
+                    return
+                }
+        
+        playerWC.window?.makeKeyAndOrderFront(nil)
+        playerWC.contentVC?.url = url
+    }
+    
+    
     func startSearchingUrl(_ url: String, directly: Bool = false) {
         guard url != "" else { return }
-        
         Processes.shared.stopDecodeURL()
         waitingErrorMessage = nil
+        yougetResult = nil
+        
+        let jspSupported = [.biliLive, .cc163, .douyu, .huya, .douyin].contains(SupportSites(url: url))
+        
+        if Preferences.shared.enableFlvjs, jspSupported {
+            openWithJSPlayer(url)
+            return
+        }
+        
         isSearching = true
         progressStatusChanged(true)
         NotificationCenter.default.post(name: .updateSideBarSelection, object: nil, userInfo: ["newItem": SidebarItem.search])
         var str = url
         
-        VideoGet().bilibiliUrlFormatter(url).get {
+        Processes.shared.videoDecoder.bilibiliUrlFormatter(url).get {
             if self.searchField.stringValue == str {
                 self.searchField.stringValue = $0
                 str = $0
@@ -473,7 +442,7 @@ class MainViewController: NSViewController {
     func decodeUrl(_ url: String, directly: Bool = false) -> Promise<()> {
         
         return Promise { resolver in
-            let videoGet = Processes.shared.videoGet
+            let videoGet = Processes.shared.videoDecoder
             var str = url
             yougetResult = nil
             guard str.isUrl,
@@ -490,7 +459,13 @@ class MainViewController: NSViewController {
                 }.then { _ in
                     Processes.shared.decodeURL(str)
                 }.done(on: .main) {
-                    self.yougetResult = $0
+                    if Preferences.shared.autoOpenResult {
+                        self.open(result: $0, row: 0).catch {
+                            Log("Prepare DM file error : \($0)")
+                        }
+                    } else {
+                        self.yougetResult = $0
+                    }
                     resolver.fulfill(())
                 }.catch(on: .main, policy: .allErrors) {
                     resolver.reject($0)
@@ -500,7 +475,7 @@ class MainViewController: NSViewController {
             if directly {
                 decodeUrl()
             } else if let bUrl = BilibiliUrl(url: str) {
-                let u = URL(string: bUrl.fUrl)!
+                let u = bUrl.fUrl
                 var re: Promise<Void>
                 
                 switch bUrl.urlType {
@@ -540,14 +515,14 @@ class MainViewController: NSViewController {
             } else if url.host == "www.douyu.com",
                       url.pathComponents.count > 2,
                       url.pathComponents[1] == "topic" {
-                
-                videoGet.getDouyuHtml(str).done {
+                let douyu = videoGet.douyu
+                douyu.getDouyuHtml(str).done {
                     guard $0.roomIds.count > 0 else {
                         decodeUrl()
                         return
                     }
                     let cid = $0.roomId
-                    videoGet.getDouyuEventRoomNames($0.pageId).done {
+                    douyu.getDouyuEventRoomNames($0.pageId).done {
                         let infos = $0.enumerated().map {
                             DouyuVideoSelector(
                                 index: $0.offset,
@@ -559,13 +534,18 @@ class MainViewController: NSViewController {
                         self.showSelectVideo("", infos: infos, currentItem: $0.map({ $0.onlineRoomId }).firstIndex(of: cid) ?? 0)
                         resolver.fulfill(())
                     }.catch {
-                        resolver.reject($0)
+                        switch $0 {
+                        case VideoGetError.douyuNotFoundSubRooms:
+                            decodeUrl()
+                        default:
+                            resolver.reject($0)
+                        }
                     }
                 }.catch {
                     resolver.reject($0)
                 }
             } else if url.host == "cc.163.com" {
-                videoGet.getCC163State(url.absoluteString).done {
+                videoGet.cc163.getCC163State(url.absoluteString).done {
                     if let i = $0.info as? CC163Info {
                         let title = i.title.data(using: .utf8)?.base64EncodedString() ?? ""
                         str = "https://cc.163.com/ccid/\(i.ccid)/\(title)"
@@ -592,6 +572,29 @@ class MainViewController: NSViewController {
             } else {
                 decodeUrl()
             }
+        }
+    }
+    
+    func open(result: YouGetJSON, row: Int) -> Promise<()> {
+        let processes = Processes.shared
+        let preferences = Preferences.shared
+        
+        var yougetJSON = result
+        let uuid = yougetJSON.uuid
+        
+        let videoGet = processes.videoDecoder
+        
+        let key = yougetJSON.videos[row].key
+        let site = SupportSites(url: self.searchField.stringValue)
+        
+        return videoGet.prepareVideoUrl(yougetJSON, key).get {
+            yougetJSON = $0
+        }.then { _ in
+            videoGet.prepareDanmakuFile(
+                yougetJSON: yougetJSON,
+                id: uuid)
+        }.done {
+            processes.openWithPlayer(yougetJSON, key)
         }
     }
     
@@ -835,21 +838,7 @@ extension MainViewController: NSTableViewDelegate, NSTableViewDataSource {
             case .unsupported:
                 return tableView.makeView(withIdentifier: .liveUrlTableCellView, owner: nil)
             default:
-                if let v = tableView.makeView(withIdentifier: .liveStatusTableCellView, owner: nil) as? LiveStatusTableCellView {
-                    let iv = v.userCoverImageView
-                    iv?.image = nil
-                    var size = iv?.frame.size ?? .zero
-                    size.height *= 2
-                    size.width *= 2
-                    
-                    let transformer = SDImageResizingTransformer(size: size, scaleMode: .aspectFill)
-                    guard let s = data.cover else { return v }
-                    iv?.sd_setImage(
-                        with: .init(string: s),
-                        placeholderImage: nil,
-                        context: [.imageTransformer: transformer])
-                    return v
-                }
+                return tableView.makeView(withIdentifier: .liveStatusTableCellView, owner: nil) as? LiveStatusTableCellView
             }
         case bilibiliTableView:
             if let view = tableView.makeView(withIdentifier: .bilibiliCardTableCellView, owner: nil) as? BilibiliCardTableCellView {
@@ -994,6 +983,7 @@ extension MainViewController: NSMenuDelegate {
         }
     }
 }
+
 
 extension NSTableView {
     func selectedIndexs() -> IndexSet {

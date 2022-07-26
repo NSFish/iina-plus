@@ -1,0 +1,49 @@
+.abp {
+  position: relative;
+}
+
+.abp .container {
+  border: 0;
+  bottom: 0;
+  display: block;
+  left: 0;
+  margin: 0;
+  overflow: hidden;
+  position: absolute;
+  right: 0;
+  top: 0;
+  touch-callout: none;
+  transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  user-select: none;
+  z-index: 9999;
+}
+
+.abp .container .cmt {
+  color: #fff;
+  font-family: SimHei, SimSun, Heiti, "MS Mincho", "Meiryo", "Microsoft YaHei", monospace;
+  font-size: 25px;
+  letter-spacing: 0;
+  line-height: 100%;
+  margin: 0;
+  padding: 3px 0 0 0;
+  position: absolute;
+  text-decoration: none;
+  text-shadow: -1px 0 black, 0 1px black, 1px 0 black, 0 -1px black;
+  text-size-adjust: none;
+  transform: matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  transform-origin: 0% 0%;
+  white-space: pre;
+  word-break: keep-all;
+}
+
+.abp .container .cmt.no-shadow {
+  text-shadow: none;
+}
+
+.abp .container .cmt.reverse-shadow {
+  text-shadow: -1px 0 white, 0 1px white, 1px 0 white, 0 -1px white;
+}
+
+.abp .container .cmt.css-optimize {
+  will-change: transform;
+}

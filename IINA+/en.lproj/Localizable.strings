@@ -34,9 +34,6 @@
 /* Douyu */
 "SupportSites.Douyu" = "Douyu";
 
-/* eGame */
-"SupportSites.eGame" = "eGame";
-
 /* Huya */
 "SupportSites.Huya" = "Huya";
 
@@ -60,3 +57,6 @@
 
 /* ಠ_ಠ  oops,  */
 "VideoGetError.oops" = "ಠ_ಠ  oops, ";
+
+/* DouYin */
+"SupportSites.DouYin" = "DouYin";
