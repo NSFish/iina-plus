@@ -43,7 +43,7 @@ class AdvancedViewController: NSViewController, NSMenuDelegate {
     
     @IBOutlet weak var blockListPopUpButton: NSPopUpButton!
     
-    // MARK: - Live State Color
+// MARK: - Live State Color
     @IBOutlet var livingColorPick: ColorPickButton!
     @IBOutlet var offlineColorPick: ColorPickButton!
     @IBOutlet var replayColorPick: ColorPickButton!
@@ -75,8 +75,8 @@ class AdvancedViewController: NSViewController, NSMenuDelegate {
         blockTypeButtons[advancedButton] = "Advanced"
         blockTypeButtons.filter {
             Preferences.shared.dmBlockType.contains($0.value)
-        }.forEach {
-            $0.key.state = .on
+            }.forEach {
+                $0.key.state = .on
         }
         
         initBlockListMenu()

@@ -39,10 +39,15 @@ public class Bookmark: NSManagedObject {
         
         inited = true
         
+        /*
+>>>>>>> master
         if let d = updateDate?.timeIntervalSince1970,
            (Date().timeIntervalSince1970 - d) > 1800 {
             state = LiveState.none.raw
         }
+<<<<<<< HEAD
+=======
+         */
         
         Processes.shared.videoDecoder.liveInfo(url).done(on: .main) {
             self.setInfo($0)

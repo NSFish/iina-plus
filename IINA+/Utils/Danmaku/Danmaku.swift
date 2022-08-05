@@ -85,7 +85,7 @@ class Danmaku: NSObject {
     
     
     var douyinDM: DouYinDM?
-    
+
     init(_ url: String) {
         liveSite = .init(url: url)
         self.url = url

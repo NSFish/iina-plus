@@ -141,7 +141,6 @@ class HttpServer: NSObject, DanmakuDelegate {
                         session.socket.close()
                     } else if ws.site != .unsupported {
                         self?.loadNewDanmaku(ws)
-                        //
                         ws.loadFilters()
                         self?.connectedItems.append(ws)
                     }
