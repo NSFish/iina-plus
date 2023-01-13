@@ -173,20 +173,27 @@ function start(websocketServerLocation){
             isLiving = false;
             break;
         case 'sendDM':
-            if (document.visibilityState == 'visible') {
-                var comment = {
-                    'text': event.text,
-                    'stime': 0,
-                    'mode': 1,
-                    'color': 0xffffff,
-                    'border': false
-                };
-                
-                if (window.cm.validate(comment)) {
-                    window.cm.send(comment);
-                }
+            if (document.visibilityState != 'visible') {
+                return;
             }
-            break
+                
+            event.dms.forEach(function(element, index) {
+                setTimeout(function () {
+                    var comment = {
+                        'text': element.text,
+                        'stime': 0,
+                        'mode': 1,
+                        'color': 0xffffff,
+                        'border': false,
+                        'imageSrc': element.imageSrc,
+                        'imageWidth': element.imageWidth
+                    };
+                    if (window.cm.validate(comment)) {
+                        window.cm.send(comment);
+                    }
+                }, index * 150);
+            });
+            break;
         case 'liveDMServer':
             updateStatus(event.text);
             break

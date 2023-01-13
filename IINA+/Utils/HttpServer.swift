@@ -10,7 +10,7 @@ import Cocoa
 import Swifter
 import WebKit
 
-enum DanamkuMethod: String {
+enum DanamkuMethod: String, Encodable {
     case start,
     stop,
     initDM,
@@ -23,9 +23,11 @@ enum DanamkuMethod: String {
     dmOpacity,
     dmFontSize,
     dmBlockList
+    
 }
 
 class HttpServer: NSObject, DanmakuDelegate {
+    
     private var server = Swifter.HttpServer()
     
     private var unknownSessions = [WebSocketSession]()
@@ -99,12 +101,22 @@ class HttpServer: NSObject, DanmakuDelegate {
             let ws: DanmakuWS? = {
                 if text.starts(with: "iinaDM://") {
                     clickType = .plugin
-                    let u = String(text.dropFirst("iinaDM://".count))
+                    var v = 0
+                    var u = String(text.dropFirst("iinaDM://".count))
                     
-                    return .init(id: u,
-                                 site: .init(url: u),
-                                 url: u,
-                                 session: session)
+                    if u.starts(with: "v=") {
+                        let vu = u.split(separator: "&", maxSplits: 1)
+                        guard vu.count == 2 else { return nil }
+                        v = Int(vu[0].dropFirst(2)) ?? 0
+                        u = String(vu[1])
+                    }
+                    
+                    var re = DanmakuWS(id: u,
+                                       site: .init(url: u),
+                                       url: u,
+                                       session: session)
+                    re.version = v
+                    return re
                 } else if text.starts(with: "iinaWebDM://") {
                     let hex = String(text.dropFirst("iinaWebDM://".count))
                     clickType = .danmaku
@@ -112,10 +124,12 @@ class HttpServer: NSObject, DanmakuDelegate {
                             ids.count == 2 else { return nil }
                     let u = ids[1]
                     
-                    return .init(id: ids[0],
-                                 site: .init(url: u),
-                                 url: u,
-                                 session: session)
+                    var re = DanmakuWS(id: ids[0],
+                                       site: .init(url: u),
+                                       url: u,
+                                       session: session)
+                    re.version = 1
+                    return re
                 } else {
                     return nil
                 }
@@ -285,11 +299,11 @@ class HttpServer: NSObject, DanmakuDelegate {
         }
     }
     
-    func send(_ method: DanamkuMethod, text: String = "", sender: Danmaku) {
+    func send(_ event: DanmakuEvent, sender: Danmaku) {
         self.connectedItems.filter {
             $0.url == sender.url
         }.forEach {
-            $0.send(method, text: text)
+            $0.send(event)
         }
     }
     
@@ -328,9 +342,22 @@ extension HttpRequest {
     }
 }
 
-struct DanmakuEvent: Encodable {
-    var method: String
+struct DanmakuComment: Encodable {
     var text: String
+    var imageSrc: String?
+    var imageWidth: Int?
+}
+
+struct DanmakuEvent: Encodable {
+    var method: DanamkuMethod
+    var text: String
+    
+    var dms: [DanmakuComment]?
+    
+    func string() -> String? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
 }
 
 struct DanmakuWS {
@@ -341,18 +368,28 @@ struct DanmakuWS {
     
     var webview: WKWebView? = nil
     
-    func send(_ method: DanamkuMethod, text: String = "") {
-        guard let data = try? JSONEncoder().encode(DanmakuEvent(method: method.rawValue, text: text)),
-            let str = String(data: data, encoding: .utf8) else { return }
-        
-        if let s = session {
-            s.writeText(str)
-        } else if let wv = webview {
-            wv.evaluateJavaScript("window.dmMessage(\(str));").catch { _ in }
-        }
-        
-        if !str.contains("sendDM") {
-            Log("WriteText to \(id): \(str)")
+    var version = 0
+    
+    func send(_ event: DanmakuEvent) {
+        switch version {
+        case 0 where event.method == .sendDM:
+            event.dms?.forEach {
+                let de = DanmakuEvent(method: .sendDM, text: $0.text)
+                guard let str = de.string(), let s = session else { return }
+                s.writeText(str)
+            }
+        default:
+            guard let str = event.string() else { return }
+
+            if let s = session {
+                s.writeText(str)
+            } else if let wv = webview {
+                wv.evaluateJavaScript("window.dmMessage(\(str));").catch { _ in }
+            }
+            
+            if !str.contains("sendDM") {
+                Log("WriteText to \(id): \(str)")
+            }
         }
     }
     
@@ -372,16 +409,15 @@ struct DanmakuWS {
         
         Log("Danmaku font \(font) \(weight), \(size)px.")
         
-        send(.customFont, text: text)
+        send(.init(method: .customFont, text: text))
     }
 
     func customDMSpeed() {
-        let dmSpeed = Int(Preferences.shared.dmSpeed)
-        send(.dmSpeed, text: "\(dmSpeed)")
+        send(.init(method: .dmSpeed, text: "\(Int(Preferences.shared.dmSpeed))"))
     }
 
     func customDMOpdacity() {
-        send(.dmOpacity, text: "\(Preferences.shared.dmOpacity)")
+        send(.init(method: .dmOpacity, text: "\(Preferences.shared.dmOpacity)"))
     }
     
     func loadFilters() {
@@ -389,10 +425,10 @@ struct DanmakuWS {
         if Preferences.shared.dmBlockList.type != .none {
             types.append("List")
         }
-        send(.dmBlockList, text: types.joined(separator: ", "))
+        send(.init(method: .dmBlockList, text: types.joined(separator: ", ")))
     }
     
     func loadXMLDM() {
-        send(.loadDM, text: id)
+        send(.init(method: .loadDM, text: id))
     }
 }

@@ -56,16 +56,22 @@ class MainViewController: NSViewController {
     
     @IBAction func deleteBookmark(_ sender: Any) {
         guard let index = bookmarkTableView.selectedIndexs().first,
-            let w = view.window else { return }
+              let objs = bookmarkArrayController.arrangedObjects as? [Bookmark],
+              index >= 0,
+              index < objs.count,
+              let w = view.window else { return }
+        let obj = objs[index]
+        
+        
         let alert = NSAlert()
         alert.messageText = "Delete Bookmark."
-        alert.informativeText = "This item will be deleted."
+        alert.informativeText = "\(obj.liveName == "" ? obj.url : obj.liveName) will be deleted."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: w) { [weak self] in
             if $0 == .alertFirstButtonReturn {
-                self?.dataManager.deleteBookmark(index)
+                self?.dataManager.delete(obj)
                 self?.bookmarkTableView.reloadData()
             }
         }
@@ -81,13 +87,30 @@ class MainViewController: NSViewController {
     }
     
     @IBAction func copyUrl(_ sender: NSMenuItem) {
-        let url = bookmarks[bookmarkTableView.clickedRow].url
+        var url: String?
+        switch sender.menu {
+        case bookmarkTableView.menu:
+            url = bookmarks[bookmarkTableView.clickedRow].url
+        case bilibiliTableView.menu:
+            url = "https://www.bilibili.com/video/" + bilibiliCards[bilibiliTableView.clickedRow].bvid
+        default: break
+        }
+        guard let url = url else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url, forType: .string)
     }
     
     @IBAction func decode(_ sender: NSMenuItem) {
-        let url = bookmarks[bookmarkTableView.clickedRow].url
+        var url: String?
+        switch sender.menu {
+        case bookmarkTableView.menu:
+            url = bookmarks[bookmarkTableView.clickedRow].url
+        case bilibiliTableView.menu:
+            url = "https://www.bilibili.com/video/" + bilibiliCards[bilibiliTableView.clickedRow].bvid
+        default: break
+        }
+        guard let url = url else { return }
+        
         searchField.stringValue = url
         searchField.becomeFirstResponder()
         startSearch(self)
@@ -366,7 +389,7 @@ class MainViewController: NSViewController {
         NotificationCenter.default.post(name: .progressStatusChanged, object: nil, userInfo: ["inProgress": inProgress])
     }
     
-    func showSelectVideo(_ videoId: String, infos: [VideoSelector], currentItem: Int = 0) {
+    func showSelectVideo(_ videoId: String, infos: [(String, [VideoSelector])], currentItem: Int = 0) {
         guard let selectVideoViewController = self.children.compactMap({ $0 as? SelectVideoViewController }).first else {
             return
         }
@@ -485,8 +508,10 @@ class MainViewController: NSViewController {
                 switch bUrl.urlType {
                 case .video:
                     re = bilibili.getVideoList(u).done { infos in
-                        if infos.count > 1 {
-                            self.showSelectVideo(bUrl.id, infos: infos, currentItem: bUrl.p - 1)
+                        let list = infos.flatMap({ $0.1 })
+                        if list.count > 1 {
+                            let cItem = list.first!.isCollection ? list.firstIndex(where: { $0.bvid == bUrl.id }) : bUrl.p - 1
+                            self.showSelectVideo(bUrl.id, infos: infos, currentItem: cItem ?? 0)
                             resolver.fulfill(())
                         } else {
                             decodeUrl()
@@ -499,14 +524,13 @@ class MainViewController: NSViewController {
                             decodeUrl()
                         } else {
                             var cItem = 0
-                            if bUrl.id.starts(with: "ep"),
-                                let epId = Int(bUrl.id.dropFirst(2)) {
+                            if bUrl.id.starts(with: "ep") {
                                 cItem = epVS.firstIndex {
-                                    $0.id == epId
+                                    $0.id == bUrl.id.dropFirst(2)
                                 } ?? 0
                             }
                             
-                            self.showSelectVideo("", infos: epVS, currentItem: cItem)
+                            self.showSelectVideo("", infos: [("", epVS)], currentItem: cItem)
                             resolver.fulfill(())
                         }
                     }
@@ -520,22 +544,31 @@ class MainViewController: NSViewController {
                       url.pathComponents.count > 2,
                       url.pathComponents[1] == "topic" {
                 let douyu = videoGet.douyu
-                douyu.getDouyuHtml(str).done {
-                    guard $0.roomIds.count > 0 else {
+                douyu.getDouyuHtml(str).done { htmls in
+                    guard htmls.roomIds.count > 0 else {
                         decodeUrl()
                         return
                     }
-                    let cid = $0.roomId
-                    douyu.getDouyuEventRoomNames($0.pageId).done {
-                        let infos = $0.enumerated().map {
+                    let cid = htmls.roomId
+                    var re = [DouyuVideoSelector]()
+                    
+                    douyu.getDouyuEventRoomNames(htmls.pageId).get {
+                        re = $0.enumerated().map {
                             DouyuVideoSelector(
                                 index: $0.offset,
                                 title: $0.element.text,
-                                id: Int($0.element.onlineRoomId) ?? 0,
+                                id: $0.element.roomId,
+                                url: "https://www.douyu.com/\($0.element.roomId)",
+                                isLiving: false,
                                 coverUrl: nil)
                         }
-
-                        self.showSelectVideo("", infos: infos, currentItem: $0.map({ $0.onlineRoomId }).firstIndex(of: cid) ?? 0)
+                    }.then { _ in
+                        douyu.getDouyuEventRoomOnlineStatus(htmls.pageId)
+                    }.done { status in
+                        re.enumerated().forEach {
+                            re[$0.offset].isLiving = status[$0.element.id] ?? false
+                        }
+                        self.showSelectVideo("", infos: [("", re)], currentItem: re.map({ $0.id }).firstIndex(of: cid) ?? 0)
                         resolver.fulfill(())
                     }.catch {
                         switch $0 {
@@ -548,27 +581,56 @@ class MainViewController: NSViewController {
                 }.catch {
                     resolver.reject($0)
                 }
-            } else if url.host == "cc.163.com" {
-                videoGet.cc163.getCC163State(url.absoluteString).done {
-                    if let i = $0.info as? CC163Info {
-                        let title = i.title.data(using: .utf8)?.base64EncodedString() ?? ""
-                        str = "https://cc.163.com/ccid/\(i.ccid)/\(title)"
-                        decodeUrl()
-                    } else if let i = $0.info as? CC163ChannelInfo {
-                        let title = i.title.data(using: .utf8)?.base64EncodedString() ?? ""
-                        str = "https://cc.163.com/ccid/\(i.ccid)/\(title)"
+            } else if url.host == "www.huya.com" {                
+                videoGet.huya.getHuyaRoomList(url.absoluteString).done { rl in
+                    if rl.list.count == 0 {
                         decodeUrl()
                     } else {
+                        self.showSelectVideo("", infos: [("", rl.list)], currentItem: rl.list.firstIndex(where: { $0.id == rl.current }) ?? 0)
+                        resolver.fulfill(())
+                    }
+                }.catch {
+                    resolver.reject($0)
+                }
+            } else if url.host == "live.bilibili.com" {
+                videoGet.biliLive.getRoomList(url.absoluteString).done {
+                    if $0.1.count == 0 || $0.1.count == 1 {
+                        decodeUrl()
+                    } else {
+                        var c = 0
+                        if url.pathComponents.count > 1 {
+                            let id = "\(url.pathComponents[1])"
+                            c = $0.1.firstIndex(where: { $0.id == id || $0.sid == id }) ?? 0
+                        }
+                        
+                        self.showSelectVideo("", infos: [("", $0.1)], currentItem: c)
+                        resolver.fulfill(())
+                    }
+                }.catch {
+                    resolver.reject($0)
+                }
+            } else if url.host == "cc.163.com" {
+                videoGet.cc163.getCC163State(url.absoluteString).done {
+                    
+                    
+                    if $0.list.count > 1 {
                         let infos = $0.list.enumerated().map {
                             CC163VideoSelector(
                                 index: $0.offset,
                                 title: $0.element.name,
-                                ccid: $0.element.ccid,
+                                ccid: "\($0.element.ccid)",
                                 isLiving: $0.element.isLiving,
-                                url: $0.element.channel)
+                                url: $0.element.channel,
+                                id: "\($0.element.ccid)")
                         }
-                        self.showSelectVideo("", infos: infos)
+                        self.showSelectVideo("", infos: [("", infos)])
                         resolver.fulfill(())
+                    } else if let i = $0.info as? CC163Info {
+                        str = "https://cc.163.com/ccid/\(i.ccid)"
+                        decodeUrl()
+                    } else if let i = $0.info as? CC163ChannelInfo {
+                        str = "https://cc.163.com/ccid/\(i.ccid)"
+                        decodeUrl()
                     }
                 }.catch {
                     resolver.reject($0)
@@ -587,6 +649,10 @@ class MainViewController: NSViewController {
         let uuid = yougetJSON.uuid
         
         let videoGet = processes.videoDecoder
+        
+        guard yougetJSON.videos.count > 0 else {
+            return .init(error: VideoGetError.notFountData)
+        }
         
         let key = yougetJSON.videos[row].key
         let site = SupportSites(url: self.searchField.stringValue)

@@ -15,7 +15,7 @@ import SwiftSoup
 
 class CC163: NSObject, SupportSiteProtocol {
     func liveInfo(_ url: String) -> Promise<LiveInfo> {
-        if url.pathComponents.count == 5,
+        if url.pathComponents.count == 4,
            url.pathComponents[2] == "ccid" {
             var info = BilibiliInfo()
             info.site = .cc163
@@ -43,23 +43,33 @@ class CC163: NSObject, SupportSiteProtocol {
             if let i = state.info {
                 return .value(i)
             } else if let cid = state.list.first?.cid {
-                return self.getCC163ZtState(cid: cid)
+                return self.getCC163ZtState(cid: "\(cid)")
             } else {
                 throw VideoGetError.invalidLink
             }
         }
     }
     
-    func getCC163State(_ url: String) -> Promise<(info: LiveInfo?, list: [CC163ZTInfo])> {
-        AF.request(url).responseString().then { re -> Promise<(info: LiveInfo?, list: [CC163ZTInfo])> in
+    func getCC163State(_ url: String) -> Promise<(info: LiveInfo?, list: [CC163ChannelInfo])> {
+        AF.request(url).responseString().then { re -> Promise<(info: LiveInfo?, list: [CC163ChannelInfo])> in
             guard let jsonData = re.string.subString(from: "__NEXT_DATA__", to: "</script>").subString(from: ">").data(using: .utf8) else {
                 throw VideoGetError.notFountData
             }
             let jsonObj: JSONObject = try JSONParser.JSONObjectWithData(jsonData)
             
             if let domain: String = try? jsonObj.value(for: "query.domain") {
-                let list = try self.getCC163ZtRoomList(re.string)
-                return .value((nil, list))
+                let list = try self.getCC163ZtRoomList(jsonObj)
+                guard list.count > 0 else {
+                    throw VideoGetError.notFountData
+                }
+                
+                if let cid = list.first!.cid {
+                    return self.getCC163ZtState(cid: "\(cid)").map {
+                        ($0, list)
+                    }
+                } else {
+                    return .value((list.first, list))
+                }
             } else if let cid: String = try? jsonObj.value(for: "query.subcId") {
                 return self.getCC163ZtState(cid: cid).map {
                     ($0, [])
@@ -71,22 +81,28 @@ class CC163: NSObject, SupportSiteProtocol {
         }
     }
     
-    func getCC163ZtRoomList(_ text: String) throws -> [CC163ZTInfo] {
-        try SwiftSoup.parse(text)
-            .getElementsByClass("channel_list").first()?
-            .children().map {
-                
-                CC163ZTInfo(
-                    name: try $0.children().first()?.children().first()?.text() ?? "",
-                    ccid: try $0.attr("ccid"),
-                    channel: try ($0.attr("channel").starts(with: "https:") ? $0.attr("channel") : "https:" + $0.attr("channel")),
-                    cid: try $0.attr("cid"),
-                    index: try $0.attr("index"),
-                    roomid: try $0.attr("roomid"),
-                    isLiving:  $0.children().first()?.children().hasClass("icon-live") ?? false)
-            }.filter {
-                $0.ccid != "" && $0.roomid != ""
-            } ?? []
+    func getCC163ZtRoomList(_ json: JSONObject) throws -> [CC163ChannelInfo] {
+    
+        
+        let fallback: [String: Any] = try json.value(for: "props.pageProps.fallback")
+        
+        let value = fallback.first {
+            $0.key.contains("format=json")
+        }?.value as? [String: Any]
+        
+        let obj = try (
+            value?["module_infos"] as? [[String: Any]]
+        )?.first {
+            try $0.value(for: "module_type") == "living"
+        }
+        
+        guard let obj = obj,
+              let data = try? JSONSerialization.data(withJSONObject: obj, options: .prettyPrinted) else {
+            return []
+        }
+         
+        let jsonObj: JSONObject = try JSONParser.JSONObjectWithData(data)
+        return try jsonObj.value(for: "content")
     }
     
     func getCC163ZtState(cid: String) -> Promise<LiveInfo> {
@@ -118,7 +134,7 @@ class CC163: NSObject, SupportSiteProtocol {
     
     func getCC163Ccid(_ url: String) -> Promise<(String)> {
         let pcs = url.pathComponents
-        if pcs.count == 5,
+        if pcs.count == 4,
            pcs[2] == "ccid" {
             return .value((pcs[3]))
         } else {
@@ -186,7 +202,7 @@ struct CC163VideoSelector: VideoSelector {
     let ccid: String
     let isLiving: Bool
     let url: String
-    let id: Int = -1
+    let id: String
     let coverUrl: URL? = nil
 }
 
@@ -199,36 +215,62 @@ struct CC163ChannelInfo: Unmarshaling, LiveInfo {
     var site: SupportSites
     
     var ccid: Int
+    var cid: Int?
 
+    var channel: String
+    
     init(object: MarshaledObject) throws {
         site = .cc163
-        title = try object.value(for: "title")
-        name = try object.value(for: "nickname")
-        cover = try object.value(for: "cover")
-        cover = cover.replacingOccurrences(of: "http://", with: "https://")
         
-        if let nolive: Int = try? object.value(for: "nolive"),
+        name = try object.optionalAny(for: "nickname") as? String ?? object.value(for: "name")
+        channel = object.optionalAny(for: "living_channel") as? String ?? ""
+        
+        if let isLiving: Bool = try? object.value(for: "is_living") {
+            self.isLiving = isLiving
+            
+            if let id: Int = try? object.value(for: "ccid") {
+                ccid = id
+            } else {
+                ccid = try object.value(for: "channelid")
+                cid = ccid
+            }
+            
+        } else if let nolive: Int = try? object.value(for: "nolive"),
            nolive == 1 {
             ccid = try object.value(for: "roomid")
-            avatar = cover
             isLiving = false
         } else {
             ccid = try object.value(for: "ccid")
-            avatar = try object.value(for: "purl")
-            avatar = avatar.replacingOccurrences(of: "http://", with: "https://")
             isLiving = true
+        }
+        
+
+        if isLiving {
+            title = try object.value(for: "title")
+            cover = try object.value(for: "cover")
+            cover = cover.replacingOccurrences(of: "http://", with: "https://")
+            avatar = (try? object.value(for: "purl")) ?? ""
+            avatar = avatar.replacingOccurrences(of: "http://", with: "https://")
+        } else {
+            title = (try? object.value(for: "title")) ?? name
+            cover = ""
+            avatar = ""
         }
     }
 }
 
+protocol CC163Video {
+    var vbr: Int { get }
+    var urls: [String] { get set }
+}
 
 struct CC163NewVideos: Unmarshaling {
     let title: String
-    let videos: [String: VideoItem]
+    let videos: [String: CC163Video]
     
-    struct VideoItem: Unmarshaling {
+    struct VideoItem: CC163Video, Unmarshaling {
         let vbr: Int
-        let urls: [String]
+        var urls: [String]
         
         init(object: MarshaledObject) throws {
             vbr = try object.value(for: "vbr")
@@ -238,8 +280,39 @@ struct CC163NewVideos: Unmarshaling {
         }
     }
     
+    struct StramItem: CC163Video, Unmarshaling {
+        let vbr: Int
+        var urls: [String]
+        
+        let streamname: String
+        
+        init(object: MarshaledObject) throws {
+            vbr = try object.value(for: "vbr")
+            streamname = try object.value(for: "streamname")
+            let cdns: [String: String] = try object.value(for: "CDN_FMT")
+            urls = [
+
+            ]
+            
+            if let v = cdns["ali"] {
+                urls.append("https://alipullhdlptscopy.cc.netease.com/pushstation/\(streamname).flv?\(v)")
+            }
+            
+            if let v = cdns["ks"] {
+                urls.append("https://kspullhdlptscopy.cc.netease.com/pushstation/\(streamname).flv?\(v)")
+            }
+        }
+    }
+    
     init(object: MarshaledObject) throws {
-        videos = try object.value(for: "quickplay.resolution")
+        videos = try {
+            if let re: [String: VideoItem] = try? object.value(for: "quickplay.resolution") {
+                return re
+            } else {
+                let re: [String: StramItem] = try object.value(for: "stream_list")
+                return re
+            }
+        }()
         title = try object.value(for: "title")
     }
     

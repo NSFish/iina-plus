@@ -40,7 +40,9 @@ class DouYin: NSObject, SupportSiteProtocol {
     func liveInfo(_ url: String) -> Promise<LiveInfo> {
         if cookies.count == 0 {
             if prepareTask == nil {
-                prepareTask = prepareArgs()
+                prepareTask = prepareArgs().ensure {
+                    self.prepareTask = nil
+                }
             }
             return prepareTask!.then {
                 self.getContent(url)
@@ -64,7 +66,7 @@ class DouYin: NSObject, SupportSiteProtocol {
         
         let headers = HTTPHeaders([
             "User-Agent": douyinUA,
-            "referer": "https://live.douyin.com",
+            "referer": url,
             "Cookie": cookieString
         ])
         
